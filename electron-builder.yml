@@ -1,0 +1,27 @@
+appId: com.trusttunnel.desktop
+productName: TrustTunnel Desktop
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+  - package.json
+# The trusttunnel_client binary is downloaded at runtime into userData, so it is
+# NOT bundled here. If you want to ship a binary inside the .app, drop it into
+# resources/ and uncomment the extraResources block below.
+# extraResources:
+#   - from: resources/trusttunnel_client
+#     to: trusttunnel_client
+mac:
+  category: public.app-category.utilities
+  target:
+    - dmg
+    - zip
+  # arm64 + x64 in one universal build matching the upstream universal binary.
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  # Signing/notarization is optional for local use. To distribute, set
+  # CSC_LINK / CSC_KEY_PASSWORD and Apple notarization env vars. See README.
+dmg:
+  title: ${productName} ${version}

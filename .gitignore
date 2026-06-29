@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+release/
+dist/
+
+# Bundled binary (downloaded at runtime / build time, never committed)
+resources/trusttunnel_client
+
+# Logs & debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Env / secrets (signing certs, notarization creds, etc.)
+.env
+.env.*
+*.p12
+*.mobileprovision
