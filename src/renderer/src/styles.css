@@ -201,9 +201,19 @@ code,
 }
 .dot.connecting,
 .dot.disconnecting,
+.dot.reconnecting,
 .status-dot.connecting,
-.status-dot.disconnecting {
+.status-dot.disconnecting,
+.status-dot.reconnecting {
   background: var(--warn);
+}
+.status-dot.reconnecting {
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 .dot.error,
 .status-dot.error {

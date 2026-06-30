@@ -139,11 +139,14 @@ The solution is a small shell **manager** (`src/main/vpn/manager.sh.ts`) launche
    terminates the client and exits, which fires the `sudo-prompt` completion
    callback. → **one password prompt for the whole session.**
 
-> **Heuristics worth knowing.** The upstream CLI does not document its exact
-> stdout format, so connection-state detection (`RE_CONNECTED` / `RE_ERROR` in
-> `runner.ts`) and the 6-second "still alive ⇒ connected" fallback are
-> best-effort and easy to tune. Throughput is read from the OS interface
-> counters, not from the client, so it reflects real `utun` traffic.
+> **State detection.** The client logs an explicit state machine, so `runner.ts`
+> keys transitions off `VPNCORE raise_state: [n] VPN_SS_*`
+> (`CONNECTING` / `CONNECTED` / `WAITING_RECOVERY` / …) rather than guessing from
+> free text. It also parses the `Using endpoint: … address=… ping=…ms` line for
+> the resolved server address and latency. A 6-second "still alive ⇒ connected"
+> fallback remains as a safety net if those markers are ever absent. Throughput
+> is read from the OS interface counters (`netstat`), not the client, so it
+> reflects real `utun` traffic.
 
 ### Binary updater
 

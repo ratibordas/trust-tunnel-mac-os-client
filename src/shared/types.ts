@@ -16,6 +16,7 @@ export type ConnectionPhase =
   | 'disconnected'
   | 'connecting'
   | 'connected'
+  | 'reconnecting'
   | 'disconnecting'
   | 'error'
 
@@ -26,6 +27,10 @@ export interface ConnectionState {
   hostname: string | null
   /** epoch ms when the tunnel reached "connected", else null. */
   connectedAt: number | null
+  /** Resolved endpoint address (ip:port) reported by the client, if seen. */
+  serverAddress: string | null
+  /** Endpoint round-trip ping in ms reported by the client, if seen. */
+  latencyMs: number | null
   lastError: string | null
 }
 

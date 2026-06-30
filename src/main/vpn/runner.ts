@@ -22,23 +22,32 @@ import { NetStatsPoller } from '../stats/netstats'
 
 const exec = promisify(execFile)
 
-// Heuristics for deriving connection state from log text. The CLI's exact
-// output is not documented, so these are best-effort and easy to tune.
-const RE_CONNECTED = /\b(connected|tunnel (is )?up|established|listening on|ready|started)\b/i
-const RE_ERROR = /\b(error|failed|fatal|panic|refused|unauthor|denied|invalid)\b/i
+// The client exposes an explicit state machine in its logs, e.g.
+//   VPNCORE raise_state: [0] VPN_SS_CONNECTED
+// which is far more reliable than keyword guessing. We key state transitions
+// off VPN_SS_* and only fall back to heuristics if those never appear.
+const RE_STATE = /raise_state:\s*\[\d+\]\s*VPN_SS_([A-Z_]+)/
+// "Using endpoint: name=host, address=1.2.3.4:8443, relay=none, ping=65ms"
+const RE_ENDPOINT =
+  /Using endpoint:.*?address=([^\s,]+).*?ping=(\d+)\s*ms/i
+// "Waiting recovery: to next=1000ms error=1 <reason>"
+const RE_RECOVERY = /Waiting recovery:.*?error=\d+\s*(.*)$/i
+// Hard errors that should fail the connecting phase. NOTE: this client prefixes
+// every line (even soft errors) with "INFO", so we only match explicit failures.
+const RE_HARD_ERROR = /\b(fatal|panic|unauthor\w*|authentication failed|permission denied|invalid config\w*)\b/i
 
 function sh(arg: string): string {
   return `'${arg.replace(/'/g, `'\\''`)}'`
 }
 
 function parseLogLine(text: string): LogLine {
-  const lower = text.toLowerCase()
   let level: LogLine['level'] = 'raw'
-  if (/\berror\b|\bfatal\b|\bpanic\b/.test(lower)) level = 'error'
-  else if (/\bwarn\b/.test(lower)) level = 'warn'
-  else if (/\bdebug\b/.test(lower)) level = 'debug'
-  else if (/\btrace\b/.test(lower)) level = 'trace'
-  else if (/\binfo\b/.test(lower)) level = 'info'
+  // Soft errors here are still tagged INFO by the client, so colour by content.
+  if (RE_HARD_ERROR.test(text) || /\berror\b|timed out/i.test(text)) level = 'error'
+  else if (/waiting recovery|\bwarn\b/i.test(text)) level = 'warn'
+  else if (/\bDEBUG\b/.test(text)) level = 'debug'
+  else if (/\bTRACE\b/.test(text)) level = 'trace'
+  else if (/\bINFO\b/.test(text)) level = 'info'
   return { ts: Date.now(), level, text }
 }
 
@@ -55,6 +64,8 @@ export class VpnRunner extends EventEmitter {
     configName: null,
     hostname: null,
     connectedAt: null,
+    serverAddress: null,
+    latencyMs: null,
     lastError: null
   }
   private tailer: FileTailer | null = null
@@ -72,8 +83,12 @@ export class VpnRunner extends EventEmitter {
   }
 
   private markConnected(): void {
-    if (this.state.phase === 'connecting') {
-      this.setState({ phase: 'connected', connectedAt: Date.now() })
+    if (this.state.phase === 'connecting' || this.state.phase === 'reconnecting') {
+      this.setState({
+        phase: 'connected',
+        connectedAt: this.state.connectedAt ?? Date.now(),
+        lastError: null
+      })
     }
   }
 
@@ -81,15 +96,36 @@ export class VpnRunner extends EventEmitter {
     for (const raw of chunk.split('\n')) {
       const line = raw.replace(/\r$/, '')
       if (!line.trim()) continue
-      const parsed = parseLogLine(line)
-      this.emit('log', parsed)
-      if (RE_ERROR.test(line)) {
+      this.emit('log', parseLogLine(line))
+
+      // Server address + ping, e.g. "Using endpoint: ... address=1.2.3.4:8443 ... ping=65ms"
+      const ep = RE_ENDPOINT.exec(line)
+      if (ep) this.setState({ serverAddress: ep[1], latencyMs: Number(ep[2]) })
+
+      // Explicit state machine: VPN_SS_CONNECTING / CONNECTED / WAITING_RECOVERY / DISCONNECTED ...
+      const sm = RE_STATE.exec(line)
+      if (sm) {
+        const s = sm[1]
+        if (s === 'CONNECTED') this.markConnected()
+        else if (s === 'WAITING_RECOVERY') {
+          if (this.state.phase === 'connected' || this.state.phase === 'connecting') {
+            this.setState({ phase: 'reconnecting' })
+          }
+        }
+        continue
+      }
+
+      if (RE_RECOVERY.test(line)) {
+        const m = RE_RECOVERY.exec(line)
+        this.setState({ lastError: (m?.[1] || 'Connection lost, recovering…').slice(0, 300) })
+      }
+
+      if (RE_HARD_ERROR.test(line)) {
         this.sawError = true
         if (this.state.phase === 'connecting') {
           this.setState({ lastError: line.slice(0, 300) })
         }
       }
-      if (RE_CONNECTED.test(line)) this.markConnected()
     }
   }
 
@@ -122,6 +158,8 @@ export class VpnRunner extends EventEmitter {
       configName: opts.configName,
       hostname: opts.config.endpoint.hostname,
       connectedAt: null,
+      serverAddress: null,
+      latencyMs: null,
       lastError: null
     })
 
@@ -161,7 +199,9 @@ export class VpnRunner extends EventEmitter {
         connectedAt: null,
         configId: null,
         configName: null,
-        hostname: null
+        hostname: null,
+        serverAddress: null,
+        latencyMs: null
       })
     })
   }

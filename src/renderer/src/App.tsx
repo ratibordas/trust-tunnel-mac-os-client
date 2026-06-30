@@ -17,6 +17,8 @@ const DISCONNECTED: ConnectionState = {
   configName: null,
   hostname: null,
   connectedAt: null,
+  serverAddress: null,
+  latencyMs: null,
   lastError: null
 }
 
@@ -65,7 +67,11 @@ export default function App(): JSX.Element {
     if (state.phase === 'disconnected') setStats(null)
   }, [state.phase])
 
-  const busy = state.phase === 'connecting' || state.phase === 'connected' || state.phase === 'disconnecting'
+  const busy =
+    state.phase === 'connecting' ||
+    state.phase === 'connected' ||
+    state.phase === 'reconnecting' ||
+    state.phase === 'disconnecting'
 
   const handleConnect = useCallback(async (id: string) => {
     logBuf.current = []

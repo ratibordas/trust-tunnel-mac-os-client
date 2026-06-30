@@ -19,6 +19,7 @@ const PHASE_LABEL: Record<string, string> = {
   disconnected: 'Disconnected',
   connecting: 'Connecting…',
   connected: 'Connected',
+  reconnecting: 'Reconnecting…',
   disconnecting: 'Disconnecting…',
   error: 'Error'
 }
@@ -38,18 +39,22 @@ export default function ConnectionView({
   const phase = isActive ? state.phase : 'disconnected'
   const [now, setNow] = useState(Date.now())
 
+  const uptimeRunning = phase === 'connected' || phase === 'reconnecting'
+
   useEffect(() => {
-    if (phase !== 'connected') return
+    if (!uptimeRunning) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [phase])
+  }, [uptimeRunning])
 
-  const duration =
-    phase === 'connected' && state.connectedAt ? now - state.connectedAt : 0
+  const duration = uptimeRunning && state.connectedAt ? now - state.connectedAt : 0
 
   const canConnect = binaryReady && (phase === 'disconnected' || phase === 'error')
   const canDisconnect =
-    phase === 'connecting' || phase === 'connected' || phase === 'disconnecting'
+    phase === 'connecting' ||
+    phase === 'connected' ||
+    phase === 'reconnecting' ||
+    phase === 'disconnecting'
 
   return (
     <div className="connview">
@@ -73,8 +78,11 @@ export default function ConnectionView({
           <span className={`status-dot ${phase}`} />
           <div>
             <div className="status-label">{PHASE_LABEL[phase]}</div>
-            {phase === 'connected' && (
+            {uptimeRunning && (
               <div className="muted small">Connected for {formatDuration(duration)}</div>
+            )}
+            {phase === 'reconnecting' && state.lastError && (
+              <div className="warn small">{state.lastError}</div>
             )}
             {phase === 'error' && state.lastError && (
               <div className="err small">{state.lastError}</div>
@@ -99,8 +107,16 @@ export default function ConnectionView({
       <div className="grid">
         <Stat label="Download" value={formatSpeed(stats?.downloadBps ?? 0)} sub={formatBytes(stats?.downloadTotal ?? 0)} />
         <Stat label="Upload" value={formatSpeed(stats?.uploadBps ?? 0)} sub={formatBytes(stats?.uploadTotal ?? 0)} />
-        <Stat label="Mode" value={summary.vpnMode} sub={`${summary.listener} listener`} />
-        <Stat label="Interface" value={stats?.iface ?? '—'} sub={isActive ? state.hostname ?? '' : ''} />
+        <Stat
+          label="Ping"
+          value={isActive && state.latencyMs != null ? `${state.latencyMs} ms` : '—'}
+          sub={`${summary.vpnMode} · ${summary.listener}`}
+        />
+        <Stat
+          label="Server"
+          value={stats?.iface ?? '—'}
+          sub={(isActive && state.serverAddress) || summary.hostname}
+        />
       </div>
 
       <LogView logs={logs} />
