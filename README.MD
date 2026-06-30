@@ -24,6 +24,11 @@ only the Apple Command Line Tools are needed (and only for signing a release).
 - **Live client log** streamed straight from `trusttunnel_client`.
 - **Built-in binary updater** — downloads the correct macOS universal build of
   `trusttunnel_client` from the official GitHub releases and keeps it current.
+- **Menu-bar (tray) icon** — a dropdown with Open, Connect / Disconnect (the
+  Connect action reconnects your last-used config), and Quit (which also tears
+  down the tunnel). The app keeps running in the menu bar when its window closes.
+- **Status-aware Dock icon** — the Dock icon turns green when connected, amber
+  while (re)connecting, and stays purple when idle.
 
 ### Requirements
 
@@ -104,7 +109,18 @@ npm run dev        # electron-vite dev server with HMR
 npm run typecheck  # tsc for main/preload and renderer projects
 npm run build      # typecheck + produce out/
 npm run start      # preview the production build
+npm run icons      # regenerate app + tray icons (see below)
 ```
+
+### Icons
+
+App and menu-bar icons are generated, not hand-drawn, so they are easy to
+restyle. `npm run icons` runs `scripts/make-icons.cjs` (renders the app icon SVG
+with Electron, then builds `build/icon.icns` via `sips`/`iconutil`) and
+`scripts/make-tray.py` (a pure-stdlib PNG encoder for the black, transparent
+menu-bar template icon). Edit the SVG in `make-icons.cjs` / the shapes in
+`make-tray.py` and re-run. electron-builder picks up `build/icon.icns`
+automatically for the `.app` and `.dmg`.
 
 ### Package a macOS app
 

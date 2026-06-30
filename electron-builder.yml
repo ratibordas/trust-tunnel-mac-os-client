@@ -6,13 +6,26 @@ directories:
 files:
   - out/**/*
   - package.json
-# The trusttunnel_client binary is downloaded at runtime into userData, so it is
-# NOT bundled here. If you want to ship a binary inside the .app, drop it into
-# resources/ and uncomment the extraResources block below.
-# extraResources:
-#   - from: resources/trusttunnel_client
-#     to: trusttunnel_client
+extraResources:
+  # Menu-bar (tray) template icons, loaded at runtime from process.resourcesPath.
+  - from: resources/trayTemplate.png
+    to: trayTemplate.png
+  - from: resources/trayTemplate@2x.png
+    to: trayTemplate@2x.png
+  # Status-coloured Dock icon variants, swapped at runtime by connection state.
+  - from: resources/dock-idle.png
+    to: dock-idle.png
+  - from: resources/dock-connected.png
+    to: dock-connected.png
+  - from: resources/dock-connecting.png
+    to: dock-connecting.png
+  # The trusttunnel_client binary is downloaded at runtime into userData, so it
+  # is NOT bundled. To ship one inside the .app, drop it into resources/ and add:
+  # - from: resources/trusttunnel_client
+  #   to: trusttunnel_client
 mac:
+  # build/icon.icns is picked up automatically (directories.buildResources: build).
+  icon: build/icon.icns
   category: public.app-category.utilities
   target:
     - dmg

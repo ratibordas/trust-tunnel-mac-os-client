@@ -10,6 +10,7 @@ import {
   saveConfig
 } from './config/store'
 import { vpnRunner } from './vpn/runner'
+import { connectById } from './vpn/service'
 import { checkUpdate, getBinaryInfo, installLatest } from './updater/binary'
 
 function broadcast(channel: string, payload: unknown): void {
@@ -34,12 +35,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.configValidate, (_e, raw: unknown) => validateConfig(raw))
 
   // ---- vpn ----
-  ipcMain.handle(IPC.vpnConnect, async (_e, configId: string) => {
-    const found = await getConfig(configId)
-    if (!found) throw new Error('Config not found')
-    await vpnRunner.connect({ configId, configName: found.name, config: found.config })
-    return vpnRunner.getState()
-  })
+  ipcMain.handle(IPC.vpnConnect, (_e, configId: string) => connectById(configId))
   ipcMain.handle(IPC.vpnDisconnect, async () => {
     await vpnRunner.disconnect()
     return vpnRunner.getState()

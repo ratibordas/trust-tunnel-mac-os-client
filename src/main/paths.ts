@@ -17,6 +17,23 @@ export function configIndexPath(): string {
   return join(userDataDir(), 'configs', 'index.json')
 }
 
+/**
+ * A file shipped in the bundle's resources.
+ * - Packaged: electron-builder's extraResources land in process.resourcesPath.
+ * - Dev: this module is bundled to <root>/out/main/index.js, so the project's
+ *   resources/ dir is two levels up. Resolving against __dirname (not
+ *   app.getAppPath(), which varies by launch mode) works in every run mode.
+ */
+export function bundledResource(name: string): string {
+  if (app.isPackaged) return join(process.resourcesPath, name)
+  return join(__dirname, '..', '..', 'resources', name)
+}
+
+/** Small persisted app settings (e.g. last-connected config for the tray). */
+export function settingsPath(): string {
+  return join(userDataDir(), 'settings.json')
+}
+
 export function binDir(): string {
   return join(userDataDir(), 'bin')
 }
