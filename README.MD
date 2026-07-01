@@ -24,6 +24,11 @@ only the Apple Command Line Tools are needed (and only for signing a release).
 - **Live client log** streamed straight from `trusttunnel_client`.
 - **Built-in binary updater** — downloads the correct macOS universal build of
   `trusttunnel_client` from the official GitHub releases and keeps it current.
+- **Bring your own binary** — no GitHub access, or already have the CLI
+  installed? Point the app at an existing `trusttunnel_client` from the title-bar
+  menu. The app also auto-detects one on your `PATH` / in common install dirs
+  (`/opt/homebrew/bin`, `/usr/local/bin`). Resolution order:
+  custom path → downloaded → system.
 - **Menu-bar (tray) icon** — a dropdown with Open, Connect / Disconnect (the
   Connect action reconnects your last-used config), and Quit (which also tears
   down the tunnel). The app keeps running in the menu bar when its window closes.

@@ -51,10 +51,14 @@ export interface LogLine {
   text: string
 }
 
+export type BinarySource = 'custom' | 'downloaded' | 'system' | null
+
 export interface BinaryInfo {
   installed: boolean
   installedVersion: string | null
   path: string | null
+  /** Where the active binary comes from. */
+  source: BinarySource
 }
 
 export interface UpdateInfo {
@@ -94,7 +98,9 @@ export const IPC = {
   // binary
   binaryInfo: 'binary:info',
   binaryCheckUpdate: 'binary:checkUpdate',
-  binaryInstall: 'binary:install'
+  binaryInstall: 'binary:install',
+  binaryBrowse: 'binary:browse',
+  binaryClearPath: 'binary:clearPath'
 } as const
 
 export interface SaveConfigArgs {

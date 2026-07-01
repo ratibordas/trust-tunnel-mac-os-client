@@ -37,9 +37,28 @@ export default function TitleBar({ binary, onBinaryChange }: Props): JSX.Element
     if (res.ok) setTimeout(() => setProgress(null), 1500)
   }, [onBinaryChange, check])
 
+  const browse = useCallback(async () => {
+    const res = await window.api.binary.browse()
+    await onBinaryChange()
+    if (!res.ok && res.error) {
+      setProgress({ phase: 'error', receivedBytes: 0, totalBytes: null, message: res.error })
+    } else if (res.ok) {
+      setProgress(null)
+    }
+  }, [onBinaryChange])
+
+  const useAuto = useCallback(async () => {
+    await window.api.binary.clearPath()
+    await onBinaryChange()
+    setProgress(null)
+  }, [onBinaryChange])
+
   const installed = binary?.installed
   const version = binary?.installedVersion
+  const source = binary?.source
   const updateAvailable = update?.updateAvailable
+  const sourceLabel =
+    source === 'downloaded' ? `v${version ?? '?'}` : source ? `(${source})` : ''
 
   return (
     <header className="titlebar">
@@ -48,15 +67,22 @@ export default function TitleBar({ binary, onBinaryChange }: Props): JSX.Element
       </div>
       <div className="titlebar-actions">
         <button className={`pill ${installed ? 'ok' : 'bad'}`} onClick={() => { setOpen((o) => !o); void check() }}>
-          {installed ? `client ${version ?? '?'}` : 'client not installed'}
+          {installed ? `client ${sourceLabel}` : 'client not installed'}
           {updateAvailable ? ' • update' : ''}
         </button>
         {open && (
           <div className="menu">
             <div className="menu-row">
               <strong>trusttunnel_client</strong>
-              <span className="muted">{installed ? `installed: v${version ?? '?'}` : 'not installed'}</span>
+              <span className="muted">
+                {installed ? `${source}${source === 'downloaded' ? ` · v${version ?? '?'}` : ''}` : 'not found'}
+              </span>
             </div>
+            {binary?.path && (
+              <div className="menu-row">
+                <span className="muted path" title={binary.path}>{binary.path}</span>
+              </div>
+            )}
             <div className="menu-row">
               <span className="muted">
                 {checking
@@ -87,8 +113,22 @@ export default function TitleBar({ binary, onBinaryChange }: Props): JSX.Element
                 onClick={install}
                 disabled={progress?.phase === 'downloading' || progress?.phase === 'extracting'}
               >
-                {installed ? (updateAvailable ? 'Update' : 'Reinstall') : 'Download & install'}
+                {source === 'downloaded' ? (updateAvailable ? 'Update' : 'Reinstall') : 'Download'}
               </button>
+            </div>
+            <div className="menu-divider" />
+            <div className="menu-row">
+              <span className="muted">No GitHub access, or already installed?</span>
+            </div>
+            <div className="menu-actions">
+              <button className="btn" onClick={browse}>
+                Use existing binary…
+              </button>
+              {source === 'custom' && (
+                <button className="btn" onClick={useAuto}>
+                  Use auto-detected
+                </button>
+              )}
             </div>
           </div>
         )}

@@ -6,8 +6,13 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
-import type { BinaryInfo, DownloadProgress, UpdateInfo } from '@shared/types'
+import type { BinaryInfo, BinarySource, DownloadProgress, UpdateInfo } from '@shared/types'
 import { binDir, binaryPath, binaryVersionPath } from '../paths'
+import {
+  clearBinaryPathOverride,
+  getBinaryPathOverride,
+  setBinaryPathOverride
+} from '../settings'
 
 const exec = promisify(execFile)
 
@@ -31,13 +36,91 @@ async function readVersion(): Promise<string | null> {
   }
 }
 
-export async function getBinaryInfo(): Promise<BinaryInfo> {
-  const installed = existsSync(binaryPath())
-  return {
-    installed,
-    installedVersion: installed ? await readVersion() : null,
-    path: installed ? binaryPath() : null
+// Common install locations to probe as a last resort.
+const SYSTEM_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+  ])
+}
+
+/**
+ * The user's real PATH from their login shell. A macOS app launched from
+ * Finder/Dock only gets a minimal PATH, so custom entries (e.g. ~/TrustTunnel,
+ * homebrew, cargo) added in .zshrc/.zprofile are otherwise invisible. We ask the
+ * login shell to print PATH behind a marker so interactive-prompt noise is
+ * ignored, and guard it with a timeout in case of an exotic shell config.
+ */
+async function loginShellPath(): Promise<string[]> {
+  const shell = process.env.SHELL || '/bin/zsh'
+  for (const flags of [['-lic'], ['-lc']]) {
+    try {
+      const { stdout } = await withTimeout(
+        exec(shell, [...flags, 'printf "__TTP__:%s" "$PATH"']),
+        3000
+      )
+      const m = stdout.match(/__TTP__:(.*)/)
+      if (m && m[1].trim()) return m[1].trim().split(':').filter(Boolean)
+    } catch {
+      // try next flag set / give up
+    }
   }
+  return []
+}
+
+async function detectSystemBinary(): Promise<string | null> {
+  const dirs = [
+    ...(await loginShellPath()),
+    ...(process.env.PATH ? process.env.PATH.split(':') : []),
+    ...SYSTEM_DIRS
+  ]
+  const seen = new Set<string>()
+  for (const dir of dirs) {
+    if (!dir || seen.has(dir)) continue
+    seen.add(dir)
+    const p = join(dir, BINARY_NAME)
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
+/** Resolve the binary to actually run: custom override > downloaded > system. */
+export async function resolveBinaryPath(): Promise<{ path: string | null; source: BinarySource }> {
+  const override = await getBinaryPathOverride()
+  if (override && existsSync(override)) return { path: override, source: 'custom' }
+  if (existsSync(binaryPath())) return { path: binaryPath(), source: 'downloaded' }
+  const sys = await detectSystemBinary()
+  if (sys) return { path: sys, source: 'system' }
+  return { path: null, source: null }
+}
+
+export async function getBinaryInfo(): Promise<BinaryInfo> {
+  const { path, source } = await resolveBinaryPath()
+  return {
+    installed: !!path,
+    installedVersion: source === 'downloaded' ? await readVersion() : null,
+    path,
+    source
+  }
+}
+
+/** Point at an existing binary on disk. Returns the refreshed info or an error. */
+export async function setBinaryPath(
+  path: string
+): Promise<{ ok: boolean; error?: string; info: BinaryInfo }> {
+  if (!existsSync(path)) return { ok: false, error: 'File does not exist', info: await getBinaryInfo() }
+  const s = await stat(path)
+  if (!s.isFile()) return { ok: false, error: 'Not a file', info: await getBinaryInfo() }
+  await setBinaryPathOverride(path)
+  return { ok: true, info: await getBinaryInfo() }
+}
+
+/** Forget a custom path and fall back to downloaded/system resolution. */
+export async function clearBinaryPath(): Promise<BinaryInfo> {
+  await clearBinaryPathOverride()
+  return getBinaryInfo()
 }
 
 /** Compare "1.0.33" style versions. Returns >0 if a>b. */

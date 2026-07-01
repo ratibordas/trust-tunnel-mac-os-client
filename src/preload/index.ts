@@ -43,7 +43,10 @@ const api = {
     info: (): Promise<BinaryInfo> => ipcRenderer.invoke(IPC.binaryInfo),
     checkUpdate: (): Promise<UpdateInfo> => ipcRenderer.invoke(IPC.binaryCheckUpdate),
     install: (): Promise<{ ok: boolean; version: string | null; error?: string }> =>
-      ipcRenderer.invoke(IPC.binaryInstall)
+      ipcRenderer.invoke(IPC.binaryInstall),
+    browse: (): Promise<{ ok: boolean; error?: string; info: BinaryInfo }> =>
+      ipcRenderer.invoke(IPC.binaryBrowse),
+    clearPath: (): Promise<BinaryInfo> => ipcRenderer.invoke(IPC.binaryClearPath)
   },
   events: {
     onState: (cb: (s: ConnectionState) => void) => on<ConnectionState>(IPC.evtState, cb),

@@ -8,7 +8,6 @@ import type { ClientConfig } from '@shared/schema'
 import type { ConnectionState, LogLine, NetStats } from '@shared/types'
 import {
   activeConfigPath,
-  binaryPath,
   fifoPath,
   logFilePath,
   managerScriptPath,
@@ -16,6 +15,7 @@ import {
   runtimeDir
 } from '../paths'
 import { serializeToml } from '../config/toml'
+import { resolveBinaryPath } from '../updater/binary'
 import { MANAGER_SCRIPT } from './manager.sh'
 import { FileTailer } from './tailer'
 import { NetStatsPoller } from '../stats/netstats'
@@ -137,10 +137,13 @@ export class VpnRunner extends EventEmitter {
     if (this.state.phase !== 'disconnected' && this.state.phase !== 'error') {
       throw new Error('A connection is already active')
     }
-    const bin = binaryPath()
-    if (!existsSync(bin)) {
-      throw new Error('trusttunnel_client binary is not installed. Download it in Settings.')
+    const resolved = await resolveBinaryPath()
+    if (!resolved.path) {
+      throw new Error(
+        'trusttunnel_client binary not found. Download it, or point to an existing one in the title-bar menu.'
+      )
     }
+    const bin = resolved.path
 
     // Fresh runtime dir + FIFO + rendered config.
     await mkdir(runtimeDir(), { recursive: true })

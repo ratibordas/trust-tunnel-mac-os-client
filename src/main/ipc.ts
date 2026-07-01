@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { validateConfig } from '@shared/schema'
 import { IPC, type SaveConfigArgs } from '@shared/types'
 import {
@@ -11,7 +11,13 @@ import {
 } from './config/store'
 import { vpnRunner } from './vpn/runner'
 import { connectById } from './vpn/service'
-import { checkUpdate, getBinaryInfo, installLatest } from './updater/binary'
+import {
+  checkUpdate,
+  clearBinaryPath,
+  getBinaryInfo,
+  installLatest,
+  setBinaryPath
+} from './updater/binary'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -48,4 +54,18 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.binaryInstall, () =>
     installLatest((p) => broadcast(IPC.evtDownloadProgress, p))
   )
+  ipcMain.handle(IPC.binaryBrowse, async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender) ?? undefined
+    const res = await dialog.showOpenDialog(win!, {
+      title: 'Select the trusttunnel_client executable',
+      message: 'Choose an existing trusttunnel_client binary',
+      properties: ['openFile', 'treatPackageAsDirectory', 'showHiddenFiles'],
+      defaultPath: '/usr/local/bin'
+    })
+    if (res.canceled || !res.filePaths[0]) {
+      return { ok: false, info: await getBinaryInfo() }
+    }
+    return setBinaryPath(res.filePaths[0])
+  })
+  ipcMain.handle(IPC.binaryClearPath, () => clearBinaryPath())
 }

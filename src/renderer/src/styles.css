@@ -107,6 +107,21 @@ code,
   gap: 8px;
   margin-top: 10px;
 }
+.menu-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 12px -12px;
+}
+.menu .path {
+  font-family: 'SF Mono', ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 290px;
+  direction: rtl;
+  text-align: left;
+}
 
 /* Layout */
 .body {
