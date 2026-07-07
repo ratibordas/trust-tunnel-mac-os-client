@@ -12,7 +12,9 @@
     "start": "electron-vite preview",
     "icons": "node scripts/make-icons.mjs",
     "dist": "npm run build && electron-builder --mac",
-    "dist:dir": "npm run build && electron-builder --mac --dir"
+    "dist:dir": "npm run build && electron-builder --mac --dir",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:win:dir": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "@vscode/sudo-prompt": "^9.3.1",

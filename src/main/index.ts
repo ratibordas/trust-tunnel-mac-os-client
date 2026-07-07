@@ -36,7 +36,9 @@ function createWindow(): void {
     minWidth: 880,
     minHeight: 560,
     show: false,
-    titleBarStyle: 'hiddenInset',
+    // hiddenInset is macOS-only; other platforms get a normal frame.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    ...(process.platform !== 'darwin' ? { icon: bundledResource('dock-idle.png') } : {}),
     backgroundColor: '#0f1115',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

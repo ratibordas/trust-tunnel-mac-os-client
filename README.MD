@@ -1,12 +1,13 @@
 # TrustTunnel Desktop
 
-A macOS GUI wrapper around the [TrustTunnel](https://github.com/TrustTunnel/TrustTunnel)
-VPN CLI client (`trusttunnel_client`). It lets you manage configurations, connect
-and disconnect with one click, watch live throughput and logs, and keep the
-underlying CLI binary up to date — without touching the terminal.
+A cross-platform (**macOS & Windows**) GUI wrapper around the
+[TrustTunnel](https://github.com/TrustTunnel/TrustTunnel) VPN CLI client
+(`trusttunnel_client`). It lets you manage configurations, connect and disconnect
+with one click, watch live throughput and logs, and keep the underlying CLI
+binary up to date — without touching the terminal.
 
-Built with **Electron + TypeScript + React**. No Xcode required for development;
-only the Apple Command Line Tools are needed (and only for signing a release).
+Built with **Electron + TypeScript + React**. No Xcode required for macOS
+development (only the Apple Command Line Tools, and only for signing a release).
 
 ---
 
@@ -22,26 +23,28 @@ only the Apple Command Line Tools are needed (and only for signing a release).
 - **Live stats** — download/upload speed and totals, the tunnel interface, the
   active server, and connection uptime.
 - **Live client log** streamed straight from `trusttunnel_client`.
-- **Built-in binary updater** — downloads the correct macOS universal build of
-  `trusttunnel_client` from the official GitHub releases and keeps it current.
+- **Built-in binary updater** — downloads the correct build for your OS/arch of
+  `trusttunnel_client` from the
+  [TrustTunnelClient releases](https://github.com/TrustTunnel/TrustTunnelClient/releases)
+  (macOS universal `.tar.gz`, Windows `.zip`) and keeps it current. On Windows the
+  bundled `wintun.dll` is kept next to the executable, as the driver requires.
 - **Bring your own binary** — no GitHub access, or already have the CLI
   installed? Point the app at an existing `trusttunnel_client` from the title-bar
-  menu. The app also auto-detects one on your `PATH` / in common install dirs
-  (`/opt/homebrew/bin`, `/usr/local/bin`). Resolution order:
-  custom path → downloaded → system.
-- **Menu-bar (tray) icon** — a dropdown with Open, Connect / Disconnect (the
-  Connect action reconnects your last-used config), and Quit (which also tears
-  down the tunnel). The app keeps running in the menu bar when its window closes.
-- **Status-aware Dock icon** — the Dock icon turns green when connected, amber
-  while (re)connecting, and stays purple when idle.
+  menu. The app also auto-detects one on your `PATH` (and, on macOS, common dirs
+  like `/opt/homebrew/bin`). Resolution order: custom path → downloaded → system.
+- **Tray icon** — a dropdown with Open, Connect / Disconnect (the Connect action
+  reconnects your last-used config), and Quit (which also tears down the tunnel).
+  The app keeps running in the tray/menu bar when its window closes.
+- **Status-aware icon** — turns green when connected, amber while (re)connecting,
+  purple when idle (the Dock icon on macOS, the tray icon on Windows).
 
 ### Requirements
 
-- macOS (Apple Silicon or Intel — the upstream build is universal).
-- An administrator account. TrustTunnel needs root to create the TUN interface
-  and edit routes, so **macOS will prompt for your password each time you
-  connect.** The password goes to the system authorization dialog, never to this
-  app.
+- **macOS** (Apple Silicon or Intel) or **Windows 10/11** (x64 or arm64).
+- An administrator account. TrustTunnel needs elevated rights to create the TUN
+  interface and edit routes, so the OS prompts for authorization each time you
+  connect — the macOS password dialog, or Windows UAC. Credentials go to the
+  system dialog, never to this app.
 
 ### First run
 
@@ -139,6 +142,40 @@ require Xcode** — only the Command Line Tools (`xcode-select --install`).
 Code signing and notarization are optional; configure `CSC_LINK`,
 `CSC_KEY_PASSWORD`, and the Apple notarization environment variables to enable
 them (see the electron-builder docs). The config lives in `electron-builder.yml`.
+
+### Cross-platform layer
+
+Platform-specific pieces sit behind small abstractions so the UI, config, state
+machine, and log parsing stay shared:
+
+- `platform.ts` — `isWindows` / `isMac` and the client binary name.
+- `vpn/controller.ts` — `TunnelController` with `MacTunnelController`
+  (POSIX shell manager + FIFO + `sudo-prompt`) and `WindowsTunnelController`
+  (PowerShell manager + stop-file + UAC via `sudo-prompt`).
+- `stats/poller.ts` — `NetStatsPoller` (`netstat -ibn`) vs `WinStatsPoller`
+  (`Get-NetAdapterStatistics`).
+- `updater/binary.ts` — per-OS/arch release asset selection and `.tar.gz`/`.zip`
+  extraction.
+
+`vpn/runner.ts` is platform-agnostic: it owns state, the `VPN_SS_*` log parsing,
+the tailer, and wires a controller + stats poller from the factories.
+
+### Packaging Windows
+
+```bash
+npm run dist:win       # NSIS installer (.exe) in release/
+npm run dist:win:dir   # unpacked app dir (faster)
+```
+
+Building the NSIS installer is most reliable **on Windows**. electron-builder
+converts `build/icon.png` to a `.ico` automatically. The Windows app is unsigned
+by default (SmartScreen will warn on first run — "More info → Run anyway"); add an
+Authenticode certificate to sign it.
+
+> **Windows status:** implemented behind the abstractions above and type-checks,
+> but the Windows runtime paths (UAC elevation, PowerShell manager, Wintun stats)
+> should be verified on an actual Windows machine. The macOS build is exercised
+> and known-good.
 
 ### How the privileged runner works
 

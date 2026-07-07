@@ -1,10 +1,31 @@
 import { app, Menu, type MenuItemConstructorOptions, nativeImage, Tray } from 'electron'
 import type { ConnectionPhase, ConnectionState } from '@shared/types'
 import { bundledResource } from './paths'
+import { isWindows } from './platform'
 import { vpnRunner } from './vpn/runner'
 import { connectPreferred } from './vpn/service'
 
 let tray: Tray | null = null
+
+// On Windows there's no Dock, so reflect status via the tray icon colour
+// (green/amber/purple). On macOS the tray stays a monochrome template icon and
+// the Dock carries the colour instead.
+function statusIconName(phase: ConnectionPhase): string {
+  if (phase === 'connected') return 'dock-connected.png'
+  if (phase === 'connecting' || phase === 'reconnecting') return 'dock-connecting.png'
+  return 'dock-idle.png'
+}
+
+function trayImage(phase: ConnectionPhase) {
+  if (isWindows) {
+    return nativeImage
+      .createFromPath(bundledResource(statusIconName(phase)))
+      .resize({ width: 18, height: 18 })
+  }
+  const img = nativeImage.createFromPath(bundledResource('trayTemplate.png'))
+  img.setTemplateImage(true) // adapts to light/dark menu bar automatically
+  return img
+}
 
 const PHASE_TEXT: Record<ConnectionPhase, string> = {
   disconnected: 'Disconnected',
@@ -26,13 +47,12 @@ async function quitApp(): Promise<void> {
 }
 
 export function initTray(showWindow: () => void): void {
-  const image = nativeImage.createFromPath(bundledResource('trayTemplate.png'))
-  image.setTemplateImage(true) // adapts to light/dark menu bar automatically
-  tray = new Tray(image)
+  tray = new Tray(trayImage('disconnected'))
   tray.on('click', () => tray?.popUpContextMenu())
 
   const render = (state: ConnectionState): void => {
     if (!tray) return
+    if (isWindows) tray.setImage(trayImage(state.phase))
     const active =
       state.phase === 'connected' ||
       state.phase === 'connecting' ||

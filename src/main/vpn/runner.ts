@@ -1,26 +1,13 @@
 import { EventEmitter } from 'node:events'
-import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { promisify } from 'node:util'
-import sudo from '@vscode/sudo-prompt'
+import { mkdir, writeFile } from 'node:fs/promises'
 import type { ClientConfig } from '@shared/schema'
 import type { ConnectionState, LogLine, NetStats } from '@shared/types'
-import {
-  activeConfigPath,
-  fifoPath,
-  logFilePath,
-  managerScriptPath,
-  pidFilePath,
-  runtimeDir
-} from '../paths'
+import { activeConfigPath, logFilePath, runtimeDir } from '../paths'
 import { serializeToml } from '../config/toml'
 import { resolveBinaryPath } from '../updater/binary'
-import { MANAGER_SCRIPT } from './manager.sh'
 import { FileTailer } from './tailer'
-import { NetStatsPoller } from '../stats/netstats'
-
-const exec = promisify(execFile)
+import { createStatsPoller, type StatsPoller } from '../stats/poller'
+import { createController, type TunnelController } from './controller'
 
 // The client exposes an explicit state machine in its logs, e.g.
 //   VPNCORE raise_state: [0] VPN_SS_CONNECTED
@@ -28,17 +15,13 @@ const exec = promisify(execFile)
 // off VPN_SS_* and only fall back to heuristics if those never appear.
 const RE_STATE = /raise_state:\s*\[\d+\]\s*VPN_SS_([A-Z_]+)/
 // "Using endpoint: name=host, address=1.2.3.4:8443, relay=none, ping=65ms"
-const RE_ENDPOINT =
-  /Using endpoint:.*?address=([^\s,]+).*?ping=(\d+)\s*ms/i
+const RE_ENDPOINT = /Using endpoint:.*?address=([^\s,]+).*?ping=(\d+)\s*ms/i
 // "Waiting recovery: to next=1000ms error=1 <reason>"
 const RE_RECOVERY = /Waiting recovery:.*?error=\d+\s*(.*)$/i
 // Hard errors that should fail the connecting phase. NOTE: this client prefixes
 // every line (even soft errors) with "INFO", so we only match explicit failures.
-const RE_HARD_ERROR = /\b(fatal|panic|unauthor\w*|authentication failed|permission denied|invalid config\w*)\b/i
-
-function sh(arg: string): string {
-  return `'${arg.replace(/'/g, `'\\''`)}'`
-}
+const RE_HARD_ERROR =
+  /\b(fatal|panic|unauthor\w*|authentication failed|permission denied|invalid config\w*)\b/i
 
 function parseLogLine(text: string): LogLine {
   let level: LogLine['level'] = 'raw'
@@ -57,19 +40,21 @@ export interface VpnRunnerEvents {
   log: (l: LogLine) => void
 }
 
+const DISCONNECTED: Omit<ConnectionState, 'phase'> = {
+  configId: null,
+  configName: null,
+  hostname: null,
+  connectedAt: null,
+  serverAddress: null,
+  latencyMs: null,
+  lastError: null
+}
+
 export class VpnRunner extends EventEmitter {
-  private state: ConnectionState = {
-    phase: 'disconnected',
-    configId: null,
-    configName: null,
-    hostname: null,
-    connectedAt: null,
-    serverAddress: null,
-    latencyMs: null,
-    lastError: null
-  }
+  private state: ConnectionState = { phase: 'disconnected', ...DISCONNECTED }
   private tailer: FileTailer | null = null
-  private netstats: NetStatsPoller | null = null
+  private stats: StatsPoller | null = null
+  private controller: TunnelController | null = null
   private connectGraceTimer: NodeJS.Timeout | null = null
   private sawError = false
 
@@ -98,11 +83,9 @@ export class VpnRunner extends EventEmitter {
       if (!line.trim()) continue
       this.emit('log', parseLogLine(line))
 
-      // Server address + ping, e.g. "Using endpoint: ... address=1.2.3.4:8443 ... ping=65ms"
       const ep = RE_ENDPOINT.exec(line)
       if (ep) this.setState({ serverAddress: ep[1], latencyMs: Number(ep[2]) })
 
-      // Explicit state machine: VPN_SS_CONNECTING / CONNECTED / WAITING_RECOVERY / DISCONNECTED ...
       const sm = RE_STATE.exec(line)
       if (sm) {
         const s = sm[1]
@@ -122,11 +105,25 @@ export class VpnRunner extends EventEmitter {
 
       if (RE_HARD_ERROR.test(line)) {
         this.sawError = true
-        if (this.state.phase === 'connecting') {
-          this.setState({ lastError: line.slice(0, 300) })
-        }
+        if (this.state.phase === 'connecting') this.setState({ lastError: line.slice(0, 300) })
       }
     }
+  }
+
+  private onSessionExit(result: { error?: string; cancelled?: boolean }): void {
+    this.cleanupMonitors()
+    if (this.state.phase === 'connecting' && (result.cancelled || result.error)) {
+      // Keep configId so the error is shown against the selected config.
+      this.setState({
+        phase: 'error',
+        connectedAt: null,
+        lastError: result.cancelled ? 'Authorization cancelled.' : `Failed to start: ${result.error}`
+      })
+      return
+    }
+    // Clean stop or client death.
+    const wasError = this.state.phase === 'error'
+    this.setState({ phase: wasError ? 'error' : 'disconnected', ...DISCONNECTED })
   }
 
   async connect(opts: {
@@ -143,16 +140,10 @@ export class VpnRunner extends EventEmitter {
         'trusttunnel_client binary not found. Download it, or point to an existing one in the title-bar menu.'
       )
     }
-    const bin = resolved.path
 
-    // Fresh runtime dir + FIFO + rendered config.
     await mkdir(runtimeDir(), { recursive: true })
-    await rm(fifoPath(), { force: true })
-    await rm(pidFilePath(), { force: true })
     await writeFile(logFilePath(), '', 'utf8')
     await writeFile(activeConfigPath(), serializeToml(opts.config), 'utf8')
-    await writeFile(managerScriptPath(), MANAGER_SCRIPT, { mode: 0o755 })
-    await exec('mkfifo', [fifoPath()])
 
     this.sawError = false
     this.setState({
@@ -166,69 +157,34 @@ export class VpnRunner extends EventEmitter {
       lastError: null
     })
 
-    // Start tailing logs and polling stats immediately.
+    // Tail logs + poll stats immediately (platform-specific poller).
     this.tailer = new FileTailer(logFilePath(), (c) => this.handleLogChunk(c))
     this.tailer.start()
-    this.netstats = new NetStatsPoller((s) => this.emit('stats', s))
-    void this.netstats.start(opts.config.listener.tun?.device_name)
+    this.stats = createStatsPoller((s) => this.emit('stats', s))
+    void this.stats.start(opts.config.listener.tun?.device_name)
 
-    // Grace fallback: if the binary stays alive a few seconds with no error and
-    // no explicit "connected" log marker, assume the tunnel is up.
+    // Grace fallback: alive a few seconds with no error and no explicit
+    // "connected" marker => assume the tunnel is up.
     this.connectGraceTimer = setTimeout(() => {
       if (this.state.phase === 'connecting' && !this.sawError) this.markConnected()
     }, 6000)
 
-    const command = `/bin/sh ${sh(managerScriptPath())} ${sh(bin)} ${sh(activeConfigPath())} ${sh(
-      logFilePath()
-    )} ${sh(fifoPath())} ${sh(pidFilePath())}`
-
-    // sudo-prompt resolves only when the manager script EXITS (i.e. on
-    // disconnect or client death). One password prompt for the whole session.
-    sudo.exec(command, { name: 'TrustTunnel Desktop' }, (error, _stdout, stderr) => {
-      this.cleanupMonitors()
-      if (error && this.state.phase === 'connecting') {
-        // Almost always: user cancelled the password dialog, or sudo failed.
-        const msg = /cancel|denied|User did not/i.test(error.message)
-          ? 'Authorization cancelled.'
-          : `Failed to start: ${error.message}`
-        this.setState({ phase: 'error', lastError: msg, connectedAt: null })
-        return
-      }
-      if (error && stderr) this.emit('log', parseLogLine(`[manager] ${stderr}`))
-      // Normal completion or client exit.
-      const phase = this.state.phase
-      this.setState({
-        phase: phase === 'error' ? 'error' : 'disconnected',
-        connectedAt: null,
-        configId: null,
-        configName: null,
-        hostname: null,
-        serverAddress: null,
-        latencyMs: null
-      })
+    // One elevation prompt for the whole session; onExit fires when it ends.
+    this.controller = createController()
+    await this.controller.start({
+      binPath: resolved.path,
+      configPath: activeConfigPath(),
+      logPath: logFilePath(),
+      onExit: (r) => this.onSessionExit(r)
     })
   }
 
-  /** Signals the privileged manager to stop via the control FIFO. */
+  /** Signals the privileged manager to stop over its control channel. */
   async disconnect(): Promise<void> {
     if (this.state.phase === 'disconnected') return
     this.setState({ phase: 'disconnecting' })
-    const fifo = fifoPath()
-    if (!existsSync(fifo)) {
-      // Manager already gone; just reset.
-      this.cleanupMonitors()
-      this.setState({ phase: 'disconnected', connectedAt: null })
-      return
-    }
-    try {
-      // Write through a short-lived shell so a missing reader can't hang us.
-      await Promise.race([
-        exec('/bin/sh', ['-c', `echo stop > ${sh(fifo)}`]),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000))
-      ])
-    } catch {
-      // The sudo-prompt callback will still finalize state when the manager exits.
-    }
+    // If the manager already exited, onSessionExit has (or will) reset us.
+    await this.controller?.stop().catch(() => {})
   }
 
   private cleanupMonitors(): void {
@@ -236,8 +192,9 @@ export class VpnRunner extends EventEmitter {
     this.connectGraceTimer = null
     this.tailer?.stop()
     this.tailer = null
-    this.netstats?.stop()
-    this.netstats = null
+    this.stats?.stop()
+    this.stats = null
+    this.controller = null
   }
 }
 

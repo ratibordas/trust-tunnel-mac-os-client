@@ -38,3 +38,15 @@ mac:
   # CSC_LINK / CSC_KEY_PASSWORD and Apple notarization env vars. See README.
 dmg:
   title: ${productName} ${version}
+win:
+  # build/icon.png (>=256px) is auto-converted to .ico by electron-builder.
+  icon: build/icon.png
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

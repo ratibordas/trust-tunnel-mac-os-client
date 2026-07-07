@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process'
 import { createWriteStream, existsSync } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
 import type { BinaryInfo, BinarySource, DownloadProgress, UpdateInfo } from '@shared/types'
 import { binDir, binaryPath, binaryVersionPath } from '../paths'
+import { clientBinaryName, isMac, isWindows } from '../platform'
 import {
   clearBinaryPathOverride,
   getBinaryPathOverride,
@@ -16,11 +17,26 @@ import {
 
 const exec = promisify(execFile)
 
-const REPO = 'TrustTunnel/TrustTunnel'
+// The client is published per-platform in this repo (Windows/macOS/Linux),
+// unlike the endpoint repo which lacks Windows builds.
+const REPO = 'TrustTunnel/TrustTunnelClient'
 const RELEASES_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`
-// macOS ships a single universal (arm64 + x86_64) build.
-const ASSET_RE = /^trusttunnel-v[\d.]+-macos-universal\.tar\.gz$/
-const BINARY_NAME = 'trusttunnel_client'
+const BINARY_NAME = clientBinaryName()
+
+/** Maps process.arch to the arch token used in release asset names. */
+function archToken(): string {
+  if (isWindows) return process.arch === 'arm64' ? 'aarch64' : process.arch === 'ia32' ? 'i686' : 'x86_64'
+  if (isMac) return 'universal'
+  return process.arch === 'arm64' ? 'aarch64' : 'x86_64'
+}
+
+/** Regex matching the release asset for this platform+arch. */
+function assetRegex(): RegExp {
+  const v = '[\\d.]+'
+  if (isWindows) return new RegExp(`^trusttunnel_client-v${v}-windows-${archToken()}\\.zip$`)
+  if (isMac) return new RegExp(`^trusttunnel_client-v${v}-macos-universal\\.tar\\.gz$`)
+  return new RegExp(`^trusttunnel_client-v${v}-linux-${archToken()}\\.tar\\.gz$`)
+}
 
 interface VersionFile {
   version: string
@@ -36,9 +52,6 @@ async function readVersion(): Promise<string | null> {
   }
 }
 
-// Common install locations to probe as a last resort.
-const SYSTEM_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
-
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     p,
@@ -47,20 +60,15 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * The user's real PATH from their login shell. A macOS app launched from
- * Finder/Dock only gets a minimal PATH, so custom entries (e.g. ~/TrustTunnel,
- * homebrew, cargo) added in .zshrc/.zprofile are otherwise invisible. We ask the
- * login shell to print PATH behind a marker so interactive-prompt noise is
- * ignored, and guard it with a timeout in case of an exotic shell config.
+ * The user's real PATH from their login shell (macOS/Linux). A GUI app launched
+ * from Finder/Dock only gets a minimal PATH, so custom entries added in
+ * .zshrc/.zprofile (e.g. ~/TrustTunnel, homebrew) are otherwise invisible.
  */
 async function loginShellPath(): Promise<string[]> {
   const shell = process.env.SHELL || '/bin/zsh'
   for (const flags of [['-lic'], ['-lc']]) {
     try {
-      const { stdout } = await withTimeout(
-        exec(shell, [...flags, 'printf "__TTP__:%s" "$PATH"']),
-        3000
-      )
+      const { stdout } = await withTimeout(exec(shell, [...flags, 'printf "__TTP__:%s" "$PATH"']), 3000)
       const m = stdout.match(/__TTP__:(.*)/)
       if (m && m[1].trim()) return m[1].trim().split(':').filter(Boolean)
     } catch {
@@ -71,10 +79,29 @@ async function loginShellPath(): Promise<string[]> {
 }
 
 async function detectSystemBinary(): Promise<string | null> {
+  if (isWindows) {
+    // Windows GUI apps DO inherit the user/system PATH, so `where` + %PATH% work.
+    try {
+      const { stdout } = await exec('where', [BINARY_NAME], { windowsHide: true })
+      const first = stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean)
+      if (first && existsSync(first)) return first
+    } catch {
+      // not on PATH
+    }
+    for (const dir of (process.env.PATH ?? '').split(';')) {
+      if (!dir) continue
+      const p = join(dir, BINARY_NAME)
+      if (existsSync(p)) return p
+    }
+    return null
+  }
+
   const dirs = [
     ...(await loginShellPath()),
     ...(process.env.PATH ? process.env.PATH.split(':') : []),
-    ...SYSTEM_DIRS
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin'
   ]
   const seen = new Set<string>()
   for (const dir of dirs) {
@@ -155,14 +182,17 @@ async function fetchLatestRelease(): Promise<GithubRelease> {
 
 export async function checkUpdate(): Promise<UpdateInfo> {
   const release = await fetchLatestRelease()
-  const asset = release.assets.find((a) => ASSET_RE.test(a.name))
+  const re = assetRegex()
+  const asset = release.assets.find((a) => re.test(a.name))
   const latestVersion = release.tag_name.replace(/^v/, '')
   const installedVersion = await readVersion()
   return {
     latestVersion,
     installedVersion,
     updateAvailable:
-      !!latestVersion && (!installedVersion || compareVersions(latestVersion, installedVersion) > 0),
+      !!latestVersion &&
+      !!asset &&
+      (!installedVersion || compareVersions(latestVersion, installedVersion) > 0),
     downloadUrl: asset?.browser_download_url ?? null,
     publishedAt: release.published_at ?? null
   }
@@ -182,9 +212,10 @@ async function findBinary(dir: string): Promise<string | null> {
 }
 
 /**
- * Downloads the latest macOS universal release, extracts trusttunnel_client,
- * installs it into userData/bin, strips the Gatekeeper quarantine flag, and
- * records the version. Reports progress through onProgress.
+ * Downloads the latest client release for this platform, extracts it, and
+ * installs the whole payload into userData/bin — the whole payload matters on
+ * Windows, where wintun.dll must sit next to trusttunnel_client.exe. Records the
+ * version and reports progress.
  */
 export async function installLatest(
   onProgress: (p: DownloadProgress) => void
@@ -193,11 +224,12 @@ export async function installLatest(
   try {
     const info = await checkUpdate()
     if (!info.downloadUrl || !info.latestVersion) {
-      throw new Error('No macOS universal asset found in the latest release')
+      throw new Error(`No ${isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux'} asset in the latest release`)
     }
 
     workdir = await mkdtemp(join(tmpdir(), 'tt-dl-'))
-    const tarball = join(workdir, 'release.tar.gz')
+    const isZip = info.downloadUrl.toLowerCase().endsWith('.zip')
+    const archive = join(workdir, isZip ? 'release.zip' : 'release.tar.gz')
 
     onProgress({ phase: 'downloading', receivedBytes: 0, totalBytes: null })
     const res = await fetch(info.downloadUrl, { headers: { 'User-Agent': 'TrustTunnel-Desktop' } })
@@ -210,22 +242,30 @@ export async function installLatest(
       received += chunk.length
       onProgress({ phase: 'downloading', receivedBytes: received, totalBytes: total })
     })
-    await pipeline(reader, createWriteStream(tarball))
+    await pipeline(reader, createWriteStream(archive))
 
     onProgress({ phase: 'extracting', receivedBytes: received, totalBytes: total })
     const extractDir = join(workdir, 'extracted')
     await mkdir(extractDir, { recursive: true })
-    await exec('tar', ['-xzf', tarball, '-C', extractDir])
+    // bsdtar (macOS + Windows 10+ ship it as `tar`) extracts both zip and tar.gz.
+    await exec('tar', [isZip ? '-xf' : '-xzf', archive, '-C', extractDir])
 
     const found = await findBinary(extractDir)
     if (!found) throw new Error(`'${BINARY_NAME}' not found inside the release archive`)
 
     onProgress({ phase: 'installing', receivedBytes: received, totalBytes: total })
+    // Replace binDir with the archive payload (brings wintun.dll etc. alongside).
+    await rm(binDir(), { recursive: true, force: true })
     await mkdir(binDir(), { recursive: true })
-    await copyFile(found, binaryPath())
-    await exec('chmod', ['+x', binaryPath()])
-    // Clear quarantine so macOS doesn't block the unsigned binary.
-    await exec('xattr', ['-d', 'com.apple.quarantine', binaryPath()]).catch(() => {})
+    await cp(dirname(found), binDir(), { recursive: true })
+
+    if (!isWindows) {
+      await exec('chmod', ['+x', binaryPath()])
+      if (isMac) {
+        // Clear quarantine so macOS doesn't block the unsigned binary.
+        await exec('xattr', ['-dr', 'com.apple.quarantine', binDir()]).catch(() => {})
+      }
+    }
 
     await writeFile(
       binaryVersionPath(),
